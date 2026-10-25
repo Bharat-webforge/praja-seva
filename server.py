@@ -10,9 +10,10 @@ import json, os, re, urllib.request, urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PAGE = os.path.join(HERE, "prajaa-sevaa.html")
+PAGE = next((os.path.join(HERE, f) for f in ("index.html", "prajaa-sevaa.html")
+             if os.path.exists(os.path.join(HERE, f))), os.path.join(HERE, "prajaa-sevaa.html"))
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""), "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"] if m]
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("PRAJA_MODEL", "claude-haiku-5-5")
 PORT = int(os.environ.get("PORT", "8000"))
@@ -51,13 +52,24 @@ def call_gemini(prompt, image_data_url):
         parts.insert(0, {"inline_data": {"mime_type": img[0], "data": img[1]}})
     body = json.dumps({"contents": [{"parts": parts}],
                        "generationConfig": {"responseMimeType": "application/json"}}).encode()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_KEY}"
-    req = urllib.request.Request(url, data=body, method="POST",
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=40) as r:
-        data = json.loads(r.read().decode())
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    return clean_json(text)
+    last_err = None
+    for model in dict.fromkeys(GEMINI_MODELS):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+        req = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=40) as r:
+                data = json.loads(r.read().decode())
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            print(f"Gemini OK with model {model}", flush=True)
+            return clean_json(text)
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")[:400]
+            print(f"Gemini error {e.code} on model {model}: {detail}", flush=True)
+            last_err = e
+            if e.code in (401, 403, 429):
+                break  # key or quota problem, other models will fail too
+    raise last_err
 
 
 def call_claude(prompt, image_data_url):
@@ -110,8 +122,10 @@ class Handler(BaseHTTPRequestHandler):
             result = call_gemini(prompt, img) if GEMINI_KEY else call_claude(prompt, img)
             self._send(200, json.dumps(result, ensure_ascii=False).encode())
         except urllib.error.HTTPError as e:
+            print(f"AI request failed with HTTP {e.code}", flush=True)
             self._send(502, json.dumps({"error": "upstream", "status": e.code}).encode())
         except Exception as e:
+            print(f"AI request failed: {type(e).__name__}: {e}", flush=True)
             self._send(500, json.dumps({"error": str(e)[:200]}).encode())
 
     def log_message(self, fmt, *args):
