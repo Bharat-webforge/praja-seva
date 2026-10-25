@@ -6,14 +6,14 @@ otherwise Anthropic Claude if ANTHROPIC_API_KEY is set.
 Get a free Gemini key: https://aistudio.google.com/apikey
 Run locally:  python server.py   then open http://localhost:8000
 """
-import json, os, re, urllib.request, urllib.error
+import json, os, re, time, urllib.request, urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = next((os.path.join(HERE, f) for f in ("index.html", "prajaa-sevaa.html")
              if os.path.exists(os.path.join(HERE, f))), os.path.join(HERE, "prajaa-sevaa.html"))
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""), "gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.0-flash"] if m]
+GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""), "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"] if m]
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("PRAJA_MODEL", "claude-haiku-5-5")
 PORT = int(os.environ.get("PORT", "8000"))
@@ -55,23 +55,29 @@ def call_gemini(prompt, image_data_url):
     last_err = None
     for model in dict.fromkeys(GEMINI_MODELS):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
-        req = urllib.request.Request(url, data=body, method="POST",
-                                     headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=90) as r:
-                data = json.loads(r.read().decode())
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            print(f"Gemini OK with model {model}", flush=True)
-            return clean_json(text)
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode(errors="replace")[:400]
-            print(f"Gemini error {e.code} on model {model}: {detail}", flush=True)
-            last_err = e
-            if e.code in (401, 403, 429):
-                break  # key or quota problem, other models will fail too
-        except Exception as e:
-            print(f"Gemini timeout/network error on model {model}: {type(e).__name__}: {e}", flush=True)
-            last_err = e
+        for attempt in range(3):
+            req = urllib.request.Request(url, data=body, method="POST",
+                                         headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=90) as r:
+                    data = json.loads(r.read().decode())
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                print(f"Gemini OK with model {model}", flush=True)
+                return clean_json(text)
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode(errors="replace")[:300]
+                print(f"Gemini error {e.code} on model {model} (try {attempt+1}): {detail}", flush=True)
+                last_err = e
+                if e.code in (500, 503) and attempt < 2:
+                    time.sleep(3)  # temporary overload, retry same model
+                    continue
+                if e.code in (401, 403, 429):
+                    raise e  # key or quota problem, stop
+                break  # 404 etc: try next model
+            except Exception as e:
+                print(f"Gemini timeout/network error on model {model}: {type(e).__name__}: {e}", flush=True)
+                last_err = e
+                break
     raise last_err
 
 
