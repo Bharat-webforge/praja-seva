@@ -13,7 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = next((os.path.join(HERE, f) for f in ("index.html", "prajaa-sevaa.html")
              if os.path.exists(os.path.join(HERE, f))), os.path.join(HERE, "prajaa-sevaa.html"))
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""), "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"] if m]
+GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""), "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"] if m]
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("PRAJA_MODEL", "claude-haiku-5-5")
 PORT = int(os.environ.get("PORT", "8000"))
