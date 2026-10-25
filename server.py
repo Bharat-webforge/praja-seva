@@ -135,7 +135,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     print(f"Praja Seva running on http://localhost:{PORT}")
     if GEMINI_KEY:
-        print(f"AI: Gemini ({GEMINI_MODEL})")
+        print(f"AI: Gemini (models: {', '.join(dict.fromkeys(GEMINI_MODELS))})")
     elif ANTHROPIC_KEY:
         print(f"AI: Claude ({CLAUDE_MODEL})")
     else:
