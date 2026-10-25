@@ -13,7 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = next((os.path.join(HERE, f) for f in ("index.html", "prajaa-sevaa.html")
              if os.path.exists(os.path.join(HERE, f))), os.path.join(HERE, "prajaa-sevaa.html"))
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""), "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"] if m]
+GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""), "gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.0-flash"] if m]
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("PRAJA_MODEL", "claude-haiku-5-5")
 PORT = int(os.environ.get("PORT", "8000"))
@@ -58,7 +58,7 @@ def call_gemini(prompt, image_data_url):
         req = urllib.request.Request(url, data=body, method="POST",
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=40) as r:
+            with urllib.request.urlopen(req, timeout=90) as r:
                 data = json.loads(r.read().decode())
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             print(f"Gemini OK with model {model}", flush=True)
@@ -69,6 +69,9 @@ def call_gemini(prompt, image_data_url):
             last_err = e
             if e.code in (401, 403, 429):
                 break  # key or quota problem, other models will fail too
+        except Exception as e:
+            print(f"Gemini timeout/network error on model {model}: {type(e).__name__}: {e}", flush=True)
+            last_err = e
     raise last_err
 
 
