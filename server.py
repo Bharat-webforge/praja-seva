@@ -7,13 +7,13 @@ Get a free Gemini key: https://aistudio.google.com/apikey
 Run locally:  python server.py   then open http://localhost:8000
 """
 import json, os, re, time, urllib.request, urllib.error
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = next((os.path.join(HERE, f) for f in ("index.html", "prajaa-sevaa.html")
              if os.path.exists(os.path.join(HERE, f))), os.path.join(HERE, "prajaa-sevaa.html"))
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""), "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"] if m]
+GEMINI_MODELS = [m for m in [os.environ.get("GEMINI_MODEL", ""), "gemini-3.8-flash", "gemini-2.5-flash"] if m]
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("PRAJA_MODEL", "claude-haiku-5-5")
 PORT = int(os.environ.get("PORT", "8000"))
@@ -45,6 +45,37 @@ def clean_json(text):
     return json.loads(re.sub(r"```json|```", "", text).strip())
 
 
+_models_cache = {"t": 0, "list": []}
+
+
+def discover_models():
+    """Ask Google which flash models this key can use (cached 10 min)."""
+    now = time.time()
+    if _models_cache["list"] and now - _models_cache["t"] < 600:
+        return _models_cache["list"]
+    if not GEMINI_KEY:
+        return []
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key={GEMINI_KEY}"
+        with urllib.request.urlopen(url, timeout=15) as r:
+            data = json.loads(r.read().decode())
+        names = []
+        for m in data.get("models", []):
+            n = m.get("name", "").replace("models/", "")
+            if ("generateContent" in m.get("supportedGenerationMethods", [])
+                    and "flash" in n
+                    and not any(x in n for x in ("image", "tts", "live", "audio", "embedding"))):
+                names.append(n)
+        names.sort(reverse=True)
+        names.sort(key=lambda n: "lite" in n)  # regular models before lite ones
+        _models_cache.update(t=now, list=names)
+        print("Available flash models:", names, flush=True)
+        return names
+    except Exception as e:
+        print(f"Model discovery failed: {type(e).__name__}: {e}", flush=True)
+        return _models_cache["list"]
+
+
 def call_gemini(prompt, image_data_url):
     parts = [{"text": prompt + "\nReturn only the JSON object."}]
     img = parse_image(image_data_url)
@@ -52,14 +83,19 @@ def call_gemini(prompt, image_data_url):
         parts.insert(0, {"inline_data": {"mime_type": img[0], "data": img[1]}})
     body = json.dumps({"contents": [{"parts": parts}],
                        "generationConfig": {"responseMimeType": "application/json"}}).encode()
+    candidates = list(dict.fromkeys(GEMINI_MODELS + discover_models()))
+    deadline = time.time() + 85
     last_err = None
-    for model in dict.fromkeys(GEMINI_MODELS):
+    for model in candidates:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
-        for attempt in range(3):
+        for attempt in range(2):
+            left = deadline - time.time()
+            if left < 5:
+                raise last_err or TimeoutError("AI took too long")
             req = urllib.request.Request(url, data=body, method="POST",
                                          headers={"Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=90) as r:
+                with urllib.request.urlopen(req, timeout=min(40, left)) as r:
                     data = json.loads(r.read().decode())
                 text = data["candidates"][0]["content"]["parts"][0]["text"]
                 print(f"Gemini OK with model {model}", flush=True)
@@ -68,17 +104,17 @@ def call_gemini(prompt, image_data_url):
                 detail = e.read().decode(errors="replace")[:300]
                 print(f"Gemini error {e.code} on model {model} (try {attempt+1}): {detail}", flush=True)
                 last_err = e
-                if e.code in (500, 503) and attempt < 2:
-                    time.sleep(3)  # temporary overload, retry same model
+                if e.code in (500, 503) and attempt == 0:
+                    time.sleep(3)  # temporary overload: retry same model once
                     continue
-                if e.code in (401, 403, 429):
-                    raise e  # key or quota problem, stop
-                break  # 404 etc: try next model
+                if e.code in (401, 403):
+                    raise e  # key is invalid, no model will work
+                break  # 404 / 429 / overloaded: try the next model
             except Exception as e:
                 print(f"Gemini timeout/network error on model {model}: {type(e).__name__}: {e}", flush=True)
                 last_err = e
                 break
-    raise last_err
+    raise last_err or RuntimeError("no Gemini model available")
 
 
 def call_claude(prompt, image_data_url):
@@ -110,6 +146,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html", "/prajaa-sevaa.html"):
             with open(PAGE, "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
+        elif self.path == "/api/models":
+            self._send(200, json.dumps({"gemini_key_set": bool(GEMINI_KEY),
+                                        "models_for_this_key": discover_models()}).encode())
         else:
             self._send(404, b'{"error":"not found"}')
 
@@ -142,11 +181,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"Praja Seva running on http://localhost:{PORT}")
+    print(f"Praja Seva running on http://localhost:{PORT}", flush=True)
     if GEMINI_KEY:
-        print(f"AI: Gemini (models: {', '.join(dict.fromkeys(GEMINI_MODELS))})")
+        print(f"AI: Gemini (preferred models: {', '.join(dict.fromkeys(GEMINI_MODELS))})", flush=True)
     elif ANTHROPIC_KEY:
-        print(f"AI: Claude ({CLAUDE_MODEL})")
+        print(f"AI: Claude ({CLAUDE_MODEL})", flush=True)
     else:
-        print("WARNING: no GEMINI_API_KEY or ANTHROPIC_API_KEY set.")
-    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+        print("WARNING: no GEMINI_API_KEY or ANTHROPIC_API_KEY set.", flush=True)
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
